@@ -41,13 +41,14 @@ var LIT_VS = function (column) {
   return [G.head.replace('precision highp float;\n', 'precision highp float;\n' + (column ? '#define COLUMN\n' : '')),
   'layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNor; layout(location=2) in vec2 aUV; layout(location=3) in float aPart;',
   'layout(location=4) in vec4 iA; layout(location=5) in vec4 iB; layout(location=6) in vec4 iC; layout(location=7) in vec4 iCol;',
-  'uniform mat4 uVP; uniform mat4 uModel; uniform vec4 uMir;',
+  'uniform mat4 uVP; uniform mat4 uModel; uniform vec4 uMir; uniform sampler2D uMask; uniform float uKind, uAux;',
   'out vec3 vW; out vec3 vN; out vec2 vUV; out vec3 vL; out vec4 vCol; out vec4 vC;',
   'mat3 rot(vec3 r){ float cy=cos(r.x), sy=sin(r.x), cx=cos(r.y), sx=sin(r.y), cz=cos(r.z), sz=sin(r.z);',
   '  mat3 Y=mat3(cy,0.0,-sy, 0.0,1.0,0.0, sy,0.0,cy); mat3 X=mat3(1.0,0.0,0.0, 0.0,cx,sx, 0.0,-sx,cx); mat3 Z=mat3(cz,sz,0.0, -sz,cz,0.0, 0.0,0.0,1.0);',
   '  return Y*X*Z; }',
   'void main(){',
   '  vec3 p = aPos; vec3 n = aNor;',
+  '  if (uKind > 2.5 && uKind < 3.5) p.z += smoothstep(0.05, 0.75, textureLod(uMask, aUV, 3.0).a) * uAux;',
   '#ifdef COLUMN',
   '  float hg = iC.x; float sg = hg < 0.0 ? -1.0 : 1.0;',
   '  p.xz *= iA.w; p.y = aPart < 0.5 ? p.y * hg : p.y * sg * iA.w + hg; n.y *= sg;',
@@ -63,7 +64,7 @@ var LIT_VS = function (column) {
 };
 
 var LIT_FS = [G.head, 'in vec3 vW; in vec3 vN; in vec2 vUV; in vec3 vL; in vec4 vCol; in vec4 vC; out vec4 oCol;',
-  'uniform vec3 uCam; uniform float uTime, uKind, uFogK; uniform vec4 uMat, uMir;',
+  'uniform vec3 uCam; uniform float uTime, uKind, uFogK, uAux, uClip; uniform vec4 uMat, uMir; uniform mat4 uModel; uniform sampler2D uMask;',
   'uniform vec3 uKeyD, uKeyC, uFillD, uFillC, uRimD, uRimC, uAmbT, uAmbB, uSkyT, uSkyH, uGndC, uSoftA, uSoftB, uFogC;',
   G.aces, G.pattern,
   'float box(vec3 r, vec3 c, vec3 ref, vec2 e){ float a = dot(r, c); if (a <= 0.0) return 0.0; vec3 u = normalize(cross(ref, c)); vec3 v = cross(c, u);',
@@ -86,7 +87,12 @@ var LIT_FS = [G.head, 'in vec3 vW; in vec3 vN; in vec2 vUV; in vec3 vL; in vec4 
   '  vec3 spec = D_GGX(NoH, a) * vis * F; vec3 diff = (1.0 - F) * (1.0 - metal) * alb / 3.14159265;',
   '  return (diff + spec) * lc * NoL; }',
   'void main(){',
-  '  vec3 alb = vCol.rgb; float rough = uMat.y, metal = uMat.x, emis = uMat.z;',
+  '  if (vL.x > uClip) discard;',
+  '  if (uKind > 4.5) { float sa = textureLod(uMask, vUV - vec2(0.004, 0.05), 4.0).a * vCol.a; if (sa < 0.01) discard; oCol = vec4(vCol.rgb * sa, sa); return; }',
+  '  vec3 alb = vCol.rgb; float rough = uMat.y, metal = uMat.x, emis = uMat.z, ma = 1.0, cg = 1.0;',
+  '  bool isT = uKind > 2.5 && uKind < 3.5, isA = uKind > 3.5 && uKind < 4.5;',
+  '  if (isT) { ma = texture(uMask, vUV).a; if (ma < 0.04) discard; alb *= mix(vec3(1.22, 1.16, 1.04), vec3(0.74, 0.56, 0.40), smoothstep(0.30, 0.82, vUV.y)); }',
+  '  if (isA) { cg = clamp(vL.y / uAux, 0.0, 1.0); alb = mix(vCol.rgb * 0.12, vCol.rgb, cg); }',
   '  if (uKind > 0.5 && uKind < 1.5) {',
   '    float r = length(vL.xz);',
   '    if (abs(vL.y) > 0.085 && r < 0.93) {',
@@ -95,7 +101,10 @@ var LIT_FS = [G.head, 'in vec3 vW; in vec3 vN; in vec2 vUV; in vec3 vL; in vec4 
   '      float rim = smoothstep(0.022, 0.0, abs(r - 0.84) - 0.018); float ring2 = smoothstep(0.016, 0.0, abs(r - 0.70) - 0.010);',
   '      float eng = max(max(inStar * 0.95, rim), ring2 * 0.75); alb = mix(alb, alb * 0.42, eng); rough = mix(rough, rough + 0.30, eng); }',
   '  }',
-  '  vec3 N = normalize(vN); vec3 V = normalize(uCam - vW); float NoV = max(dot(N, V), 1e-3);',
+  '  vec3 N = normalize(vN);',
+  '  float bev = 0.0; if (isT) { vec2 e = vec2(5.0 / 2048.0, 5.0 / 256.0); float gx = textureLod(uMask, vUV + vec2(e.x, 0.0), 3.0).a - textureLod(uMask, vUV - vec2(e.x, 0.0), 3.0).a, gy = textureLod(uMask, vUV + vec2(0.0, e.y), 3.0).a - textureLod(uMask, vUV - vec2(0.0, e.y), 3.0).a;',
+  '    bev = clamp(length(vec2(gx, gy)) * 5.0, 0.0, 1.0); N = normalize(mat3(uModel) * normalize(vec3(-gx * 3.0, gy * 3.0, 1.0))); }',
+  '  vec3 V = normalize(uCam - vW); float NoV = max(dot(N, V), 1e-3);',
   '  vec2 eq = vL.xy * 1.15; float eg = max(starLines(eq, 0.026), 0.6 * starLines(eq * 2.0 + 0.37, 0.045)) * step(1.5, uKind) * step(0.225, abs(vL.z));',
   '  alb = mix(alb, alb * vec3(0.62, 0.55, 0.50), eg); rough = mix(rough, 0.55, eg);',
   '  vec3 dpx = dFdx(vW), dpy = dFdy(vW), br1 = cross(dpy, N), br2 = cross(N, dpx); float bdet = dot(dpx, br1), bh = -eg * 0.012;',
@@ -106,15 +115,16 @@ var LIT_FS = [G.head, 'in vec3 vW; in vec3 vN; in vec2 vUV; in vec3 vL; in vec4 
   '  col += lightTerm(N, V, normalize(uRimD), uRimC, alb, f0, rough, metal);',
   '  col += mix(uAmbB, uAmbT, N.y * 0.5 + 0.5) * alb * (1.0 - metal);',
   '  vec3 R = reflect(-V, N); vec3 Fe = f0 + (max(vec3(1.0 - rough), f0) - f0) * pow(1.0 - NoV, 5.0);',
-  '  col += env(R, rough) * Fe * mix(1.0, 0.65, rough);',
+  '  col += env(R, rough) * Fe * mix(1.0, 0.65, rough) * (isT ? 0.4 : 1.0);',
   '  col += alb * (emis + vC.y);',
-  '  float alpha = uMat.w;',
+  '  if (isT) { float d = (vUV.x + vUV.y * 0.22 - (fract(uTime * 0.085) * 1.7 - 0.35)) * 7.0; col += vec3(1.0, 0.90, 0.68) * exp(-d * d) * (0.5 + 2.6 * bev); }',
+  '  float alpha = uMat.w * (isT ? smoothstep(0.35, 0.65, ma) : 1.0) * (isA ? pow(cg, 1.1) * 0.9 : 1.0);',
   '  if (uMir.x > 0.5) { float dd = max(uMir.y - vW.y, 0.0); alpha *= uMir.w * exp(-dd * uMir.z); }',
   '  float fd = length(vW - uCam); col = mix(col, uFogC, clamp(1.0 - exp(-fd * uFogK), 0.0, 0.8) * 0.45);',
   '#ifdef HDR',
-  '  oCol = vec4(col * alpha, alpha);',
+  '  oCol = vec4(col * (isT ? 1.0 : alpha), alpha);',
   '#else',
-  '  oCol = vec4(pow(aces(col), vec3(1.0 / 2.2)) * alpha, alpha);',
+  '  oCol = vec4(pow(aces(col), vec3(1.0 / 2.2)) * (isT ? 1.0 : alpha), alpha);',
   '#endif',
   '}'].join('\n');
 
@@ -238,6 +248,61 @@ function Hero(canvas, opt) {
   for (i = 0; i < NC; i++) coins.push({ rad: 4.3 + rc() * 2.6, th: rc() * TAU, w: (0.05 + rc() * 0.11) * (rc() > 0.5 ? 1 : -1), y: -1.4 + rc() * 4.0, bob: 0.15 + rc() * 0.3, f: 0.4 + rc() * 0.8, ph: rc() * TAU, s: 0.34 + rc() * 0.30, tum: 0.4 + rc() * 0.9 });
   var coinData = new Float32Array(NC * 16);
 
+  /* HUD 3D: saldo berelief + grafik tabung/area */
+  var HWd = 2048, HHt = 256;
+  var hud = { txt: '', key: '', neg: false, fw: '800', ff: 'ui-sans-serif, system-ui, sans-serif', pulse: 0, amt: null, chart: null, cw: 0, ch: 0, ser: null, dirty: false, poly: null, dp: null, hc: 0, rev: 0, line: null, area: null, cvs: document.createElement('canvas') };
+  hud.cvs.width = HWd; hud.cvs.height = HHt; hud.c2 = hud.cvs.getContext('2d');
+  hud.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, hud.tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  (function () {
+    var nx = 400, ny = 50, pos = [], nor = [], uv = [], idx = [], i, j, a;
+    for (j = 0; j <= ny; j++) for (i = 0; i <= nx; i++) { pos.push((i / nx - 0.5) * 8, 0.5 - j / ny, 0); nor.push(0, 0, 1); uv.push(i / nx, j / ny); }
+    for (j = 0; j < ny; j++) for (i = 0; i < nx; i++) { a = j * (nx + 1) + i; idx.push(a, a + nx + 1, a + 1, a + 1, a + nx + 1, a + nx + 2); }
+    D.text = N.drawable(gl, N.geo.pack(pos, nor, uv, null, idx));
+  })();
+  D.cb = N.drawable(gl, N.geo.lathe(N.geo.profSphere(12), 16, 0, TAU), new Float32Array(16));
+  function freeD(d) { if (!d) return; d.bufs.forEach(function (b) { gl.deleteBuffer(b); }); gl.deleteBuffer(d.ib); gl.deleteVertexArray(d.vao); }
+  function cr(a, b, c, d, t) { return 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (3 * b - a - 3 * c + d) * t * t * t); }
+  function renderMask() {
+    var c = hud.c2, s = 240, w;
+    c.clearRect(0, 0, HWd, HHt); c.fillStyle = '#fff'; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+    c.font = hud.fw + ' ' + s + 'px ' + hud.ff; w = c.measureText(hud.txt).width;
+    if (w > 1960) { s = Math.floor(s * 1960 / w); c.font = hud.fw + ' ' + s + 'px ' + hud.ff; }
+    c.fillText(hud.txt, HWd / 2, HHt / 2 + s * 0.30);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, hud.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, hud.cvs); gl.generateMipmap(gl.TEXTURE_2D);
+  }
+  function buildChart() {
+    hud.dirty = false; freeD(hud.line); freeD(hud.area); freeD(hud.axis); hud.line = hud.area = hud.axis = hud.poly = null;
+    var s = hud.ser, r = hud.chart; if (!s || s.length < 2 || !r || r.w < 8) return;
+    var n = s.length, hc = 2 * r.h / r.w, lo = Math.min.apply(null, s), hi = Math.max.apply(null, s), rg = (hi - lo) || 1, y0 = hc * 0.08, y1 = hc * 0.84;
+    var ys = s.map(function (v) { return y0 + (v - lo) / rg * (y1 - y0); }), xs = ys.map(function (_, i) { return -1 + 2 * i / (n - 1); });
+    var poly = [], pos = [], nor = [], idx = [], i, k, y, at;
+    for (i = 0; i < n - 1; i++) for (k = 0; k < 10; k++) { y = cr(ys[Math.max(0, i - 1)], ys[i], ys[i + 1], ys[Math.min(n - 1, i + 2)], k / 10); poly.push([xs[i] + (xs[i + 1] - xs[i]) * k / 10, clamp(y, 0.01, hc), 0]); }
+    poly.push([1, ys[n - 1], 0]);
+    for (i = 0; i < poly.length; i++) { pos.push(poly[i][0], poly[i][1], 0, poly[i][0], 0, 0); nor.push(0, 0, 1, 0, 0, 1); if (i) { at = 2 * (i - 1); idx.push(at, at + 1, at + 2, at + 1, at + 3, at + 2); } }
+    hud.axis = N.drawable(gl, N.geo.tube([[-1, 0.004, 0], [1, 0.004, 0]], 0.008, 6)); hud.line = N.drawable(gl, N.geo.tube(poly, 0.03, 8)); hud.area = N.drawable(gl, N.geo.pack(pos, nor, null, null, idx));
+    hud.poly = poly; hud.hc = hc; hud.dp = xs.map(function (x, i) { return [x, ys[i]]; });
+  }
+  function headAt(x) {
+    var p = hud.poly, i = 1; if (x <= p[0][0]) return p[0][1];
+    while (i < p.length - 1 && p[i][0] < x) i++;
+    var a = p[i - 1], b = p[i]; return a[1] + (b[1] - a[1]) * clamp((x - a[0]) / ((b[0] - a[0]) || 1), 0, 1);
+  }
+  H.setBalance = function (txt, neg, fw, ff) {
+    var key = txt + '|' + fw + '|' + ff; if (key === hud.key && neg === hud.neg) return;
+    if (hud.key && txt !== hud.txt) hud.pulse = 0.7;
+    hud.key = key; hud.txt = txt; hud.neg = neg; hud.fw = fw || '800'; hud.ff = ff || hud.ff; if (!H.lost) renderMask();
+  };
+  H.setSeries = function (a) { hud.ser = a && a.length > 1 ? a : null; hud.dirty = true; };
+  H.setRects = function (a, c, w, h) {
+    if (!hud.chart || !c || c.w !== hud.chart.w || Math.abs(c.h / c.w - hud.chart.h / hud.chart.w) > 0.01) hud.dirty = true;
+    hud.amt = a; hud.chart = c; hud.cw = w; hud.ch = h;
+  };
+  H.settle = function () { hud.rev = 1; hud.pulse = 0; };
+
   /* render targets */
   var T = {};
   function freeTargets() { ['scene', 'b0a', 'b0b', 'b1a', 'b1b'].forEach(function (k) { N.freeTarget(gl, T[k]); T[k] = null; }); }
@@ -268,8 +333,8 @@ function Hero(canvas, opt) {
     U3(p, 'uAmbT', pl.ambT); U3(p, 'uAmbB', pl.ambB); U3(p, 'uSkyT', pl.skyT); U3(p, 'uSkyH', pl.skyH); U3(p, 'uGndC', pl.gnd);
     U3(p, 'uSoftA', pl.softA); U3(p, 'uSoftB', pl.softB); U3(p, 'uFogC', pl.fog); u('uFogK', 0.012);
   }
-  function drawMat(p, d, mat, model, kind, mir) {
-    var u = U(p); UM(p, 'uModel', model); u('uMat', mat.m, mat.r, mat.e, 1.0); u('uKind', kind || 0);
+  function drawMat(p, d, mat, model, kind, mir, aux, clip) {
+    var u = U(p); UM(p, 'uModel', model); u('uMat', mat.m, mat.r, mat.e, 1.0); u('uKind', kind || 0); u('uAux', aux || 0); u('uClip', clip === undefined ? 1e4 : clip);
     if (mir) u('uMir', 1, floorY, 0.32, 0.55); else u('uMir', 0, floorY, 0, 1);
     N.draw(gl, d, mat.c);
   }
@@ -293,7 +358,7 @@ function Hero(canvas, opt) {
     var sceneT = T.scene, u;
 
     /* ---- scene pass (MSAA) ---- */
-    gl.bindFramebuffer(gl.FRAMEBUFFER, sceneT.msFb || sceneT.fb); gl.viewport(0, 0, H.w, H.h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, sceneT.msFb || sceneT.fb); gl.viewport(0, 0, H.w, H.h); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, hud.tex);
     gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST); gl.depthMask(true); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.useProgram(pBg.p); u = U(pBg); u('uRes', H.w, H.h); u('uTime', t); u('uHor', 1 - hor[1]); u('uCenter', starPos[0], 1 - starPos[1]);
     u('uPar', H.cam.x * 0.6 + sp * 0.2, H.cam.y * 0.4 + sp * 0.9); u('uStars', pl.stars); u('uDay', H.day);
@@ -333,6 +398,43 @@ function Hero(canvas, opt) {
       drawMat(pLit, D.coin, MAT.coin, M.id(), 1, mir);
       gl.frontFace(gl.CCW);
     }
+
+    function drawHud() {
+      hud.pulse *= Math.exp(-dt * 2.6);
+      if (hud.dirty && hud.chart) buildChart();
+      if (hud.poly && H.intro > 0.7 && hud.rev < 1) hud.rev = Math.min(1, hud.rev + dt / 1.9);
+      if (!hud.amt || !hud.cw || !hud.txt) return;
+      var hs = clamp((H.intro - 0.55) / 0.45, 0, 1); hs = hs * hs * (3 - 2 * hs) * (1 - 0.3 * sp);
+      if (hs < 0.01) return;
+      var dH = 5.2, hH = Math.tan(fovy / 2) * dH, hW = hH * asp, dy = -sp * 34, day = H.day, tp = hud.pulse;
+      var rx = [V[0], V[4], V[8]], ux = [V[1], V[5], V[9]], bk = [V[2], V[6], V[10]];
+      function basis(r, oy, s) {
+        var xv = (((r.x + r.w / 2) / hud.cw) * 2 - 1) * hW, yv = ((1 - ((r.y + oy + dy) / hud.ch) * 2) - shiftY) * hH, q;
+        var m = [rx[0] * s, rx[1] * s, rx[2] * s, 0, ux[0] * s, ux[1] * s, ux[2] * s, 0, bk[0] * s, bk[1] * s, bk[2] * s, 0, 0, 0, 0, 1];
+        for (q = 0; q < 3; q++) m[12 + q] = cam[q] + rx[q] * xv + ux[q] * yv - bk[q] * dH;
+        return M.mul(m, M.mul(M.RY(H.cam.x * 0.22), M.RX(-H.cam.y * 0.12)));
+      }
+      var a = hud.amt, wv = a.w / hud.cw * 2 * hW, hv = a.h / hud.ch * 2 * hH;
+      var tc = hud.neg ? [mix(1.0, 0.62, day), mix(0.55, 0.10, day), mix(0.42, 0.05, day)] : [mix(1.0, 0.03, day), mix(0.76, 0.36, day), mix(0.34, 0.20, day)];
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, hud.tex); gl.uniform1i(pLit.U.uMask, 0);
+      var tm = basis(a, a.h / 2, Math.min(wv / 8, hv) * hs);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+      drawMat(pLit, D.text, { c: [mix(0.0, 0.30, day), mix(0.03, 0.22, day), mix(0.02, 0.10, day), mix(0.85, 0.42, day)], m: 0, r: 1, e: 0 }, M.mul(tm, M.T(0, 0, -0.1)), 5, false);
+      gl.depthMask(true); gl.disable(gl.BLEND); gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+      drawMat(pLit, D.text, { c: [tc[0], tc[1], tc[2], 1], m: mix(0.85, 0.35, day), r: 0.26, e: mix(0.22, 0.0, day) + tp * 0.7 }, tm, 3, false, 0.14);
+      gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+      if (!hud.poly || !hud.chart) return;
+      var c = hud.chart, cm = basis(c, c.h, c.w / hud.cw * hW * hs), clip = 1e4, hx = 1, hy = hud.poly[hud.poly.length - 1][1], n2 = 0, arr = new Float32Array(hud.dp.length * 16), pul = 1 + 0.16 * Math.sin(t * 3.2) + tp * 0.5;
+      if (hud.rev < 1) { clip = -1.02 + 2.04 * (1 - Math.pow(1 - hud.rev, 3)); hx = clip; hy = headAt(clip); }
+      drawMat(pLit, hud.axis, { c: [1.0, 0.8, 0.42, 1], m: 0.4, r: 0.5, e: mix(0.6, 0.1, day) }, cm, 0, false);
+      drawMat(pLit, hud.line, { c: [mix(0.25, 0.0, day), mix(1.0, 0.16, day), mix(0.68, 0.09, day), 1], m: mix(0.2, 0.0, day), r: mix(0.25, 0.9, day), e: mix(1.0, 0.0, day) }, cm, 0, false, 0, clip);
+      hud.dp.forEach(function (p) { if (p[0] <= clip) arr.set([p[0], p[1], 0, 0.04, 0, 0, 0, 0, 1, 0, 0, 0, mix(1.0, 0.95, day), mix(0.78, 0.62, day), mix(0.34, 0.12, day), 1], n2++ * 16); });
+      if (n2) { N.setInst(gl, D.cb, arr, n2); drawMat(pLit, D.cb, { c: MAT.bead.c, m: 0, r: 0.1, e: mix(1.2, 0.25, day) }, cm, 0, false); }
+      drawMat(pLit, D.bead, MAT.jewel, M.mul(cm, M.mul(M.T(hx, hy, 0), M.S(0.05 * pul, 0.05 * pul, 0.05 * pul))), 0, false);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.disable(gl.CULL_FACE); gl.depthMask(false);
+      drawMat(pLit, hud.area, { c: [mix(0.22, 0.10, day), mix(1.0, 0.62, day), mix(0.66, 0.38, day), 1], m: 0, r: 0.6, e: mix(0.9, 0.7, day) }, cm, 4, false, hud.hc, clip);
+      gl.depthMask(true); gl.enable(gl.CULL_FACE); gl.disable(gl.BLEND);
+    }
     /* mirrored world first (under the floor), then floor, then the real thing */
     if (opt.reflect !== false) {
       gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); drawWorld(true); gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -341,7 +443,7 @@ function Hero(canvas, opt) {
     gl.useProgram(pFloor.p); u = U(pFloor); UM(pFloor, 'uVP', VP); U3(pFloor, 'uCam', cam); u('uTime', t); u('uFloorA', pl.floorA); u('uFogK', 0.030);
     U3(pFloor, 'uFloorC', pl.floor); U3(pFloor, 'uHorC', pl.hor); U3(pFloor, 'uGlow', pl.glow); U3(pFloor, 'uPat', pl.pat);
     N.draw(gl, D.floor);
-    gl.enable(gl.CULL_FACE); gl.disable(gl.BLEND); drawWorld(false);
+    gl.enable(gl.CULL_FACE); gl.disable(gl.BLEND); drawWorld(false); drawHud();
 
     /* particles + bokeh (additive) */
     gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
@@ -373,8 +475,10 @@ function Hero(canvas, opt) {
     gl.bindVertexArray(null);
   };
 
-  canvas.addEventListener('webglcontextlost', function (e) { e.preventDefault(); H.lost = true; });
-  canvas.addEventListener('webglcontextrestored', function () { H.lost = false; H.w = 0; if (opt.onRestore) opt.onRestore(); });
+  function onLost(e) { e.preventDefault(); H.lost = true; }
+  function onBack() { H.lost = false; H.w = 0; if (opt.onRestore) opt.onRestore(); }
+  canvas.addEventListener('webglcontextlost', onLost); canvas.addEventListener('webglcontextrestored', onBack);
+  H.off = function () { canvas.removeEventListener('webglcontextlost', onLost); canvas.removeEventListener('webglcontextrestored', onBack); };
   H.dispose = function () { freeTargets(); var ext = gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); };
   return H;
 }
