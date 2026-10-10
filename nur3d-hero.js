@@ -124,7 +124,7 @@ var LIT_VS = function (column) {
 };
 
 var LIT_FS = [G.head, 'in vec3 vW; in vec3 vN; in vec2 vUV; in vec3 vL; in vec4 vCol; in vec4 vC; out vec4 oCol;',
-  'uniform vec3 uCam; uniform float uTime, uKind, uFogK, uAux, uClip; uniform vec4 uMat, uMir; uniform mat4 uModel; uniform sampler2D uMask;',
+  'uniform vec3 uCam; uniform float uTime, uKind, uFogK, uAux, uClip, uCC; uniform vec4 uMat, uMir; uniform mat4 uModel; uniform sampler2D uMask;',
   'uniform vec3 uKeyD, uKeyC, uFillD, uFillC, uRimD, uRimC, uAmbT, uAmbB, uSkyT, uSkyH, uGndC, uSoftA, uSoftB, uFogC;',
   G.aces, G.pattern,
   'float box(vec3 r, vec3 c, vec3 ref, vec2 e){ float a = dot(r, c); if (a <= 0.0) return 0.0; vec3 u = normalize(cross(ref, c)); vec3 v = cross(c, u);',
@@ -176,6 +176,16 @@ var LIT_FS = [G.head, 'in vec3 vW; in vec3 vN; in vec2 vUV; in vec3 vL; in vec4 
   '  col += mix(uAmbB, uAmbT, N.y * 0.5 + 0.5) * alb * (1.0 - metal);',
   '  vec3 R = reflect(-V, N); vec3 Fe = f0 + (max(vec3(1.0 - rough), f0) - f0) * pow(1.0 - NoV, 5.0);',
   '  col += env(R, rough) * Fe * mix(1.0, 0.65, rough) * (isT ? 0.4 : 1.0);',
+  '  if (uCC > 0.5 && !isT) {',
+  '    vec3 Ng = normalize(vN); float Fc = 0.04 + 0.96 * pow(1.0 - max(dot(Ng, V), 1e-3), 5.0);',
+  '    vec3 ccs = env(reflect(-V, Ng), 0.06) * Fc + lightTerm(Ng, V, normalize(uKeyD), uKeyC, vec3(0.0), vec3(0.04), 0.07, 1.0) + lightTerm(Ng, V, normalize(uFillD), uFillC, vec3(0.0), vec3(0.04), 0.07, 1.0) * 0.6;',
+  '    col = col * (1.0 - 0.95 * Fc) + ccs * 0.95;',
+  '    if (uCC > 1.5) {',
+  '      vec3 cell = floor(vL * 36.0); float r1 = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453), r2 = fract(r1 * 91.7 + 0.31), r3 = fract(r2 * 57.3 + 0.77);',
+  '      vec3 fn = normalize(N + (vec3(r1, r2, r3) - 0.5) * 1.1), hk2 = normalize(V + normalize(uKeyD)), hf2 = normalize(V + normalize(uFillD));',
+  '      col += step(0.78, fract(r1 * 13.7 + r3 * 5.1)) * (uKeyC * pow(max(dot(fn, hk2), 0.0), 240.0) + uFillC * pow(max(dot(fn, hf2), 0.0), 240.0)) * 0.8;',
+  '    }',
+  '  }',
   '  col += alb * (emis + vC.y);',
   '  if (isT) { float d = (vUV.x + vUV.y * 0.22 - (fract(uTime * 0.085) * 1.7 - 0.35)) * 7.0; col += vec3(1.0, 0.90, 0.68) * exp(-d * d) * (0.5 + 2.6 * bev); }',
   '  float alpha = uMat.w * (isT ? smoothstep(0.35, 0.65, ma) : 1.0) * (isA ? pow(cg, 1.1) * 0.9 : 1.0);',
@@ -398,6 +408,34 @@ var FLY_VS = [G.head,
 var FLY_FS = [G.head, 'in float vA; out vec4 o;',
   'void main(){ float d = length(gl_PointCoord - 0.5) * 2.0; if (d > 1.0) discard; float a = 1.0 - d; a = a * a * a;',
   '  o = vec4(vec3(0.78, 1.0, 0.34) * a * vA, 0.0); }'].join('\n');
+var RAY_FS = [G.head, 'precision highp sampler2D;', 'in vec2 vUv; out vec4 o;',
+  'uniform sampler2D uDepth, uCloud; uniform vec2 uSun, uRes; uniform float uSteps;', G.noise,
+  'void main(){',
+  '  vec2 uv = vUv; vec2 dl = (uSun - uv) * 0.95 / uSteps; vec2 s = uv + dl * hash21(gl_FragCoord.xy);',
+  '  float acc = 0.0, fr = 0.0, dec = 1.0, dcy = pow(0.965, 30.0 / uSteps), asp = uRes.x / uRes.y;',
+  '  for (int i = 0; i < 64; i++) {',
+  '    if (float(i) >= uSteps) break;',
+  '    float sky = step(0.99999, textureLod(uDepth, s, 0.0).r), cv = 1.0 - clamp(textureLod(uCloud, s, 0.0).a * 1.15, 0.0, 1.0);',
+  '    vec2 dd = (s - uSun) * vec2(asp, 1.0); float w = (0.30 + exp(-dot(dd, dd) * 7.0)) * dec;',
+  '    acc += sky * cv * w; fr += w; s += dl; dec *= dcy;',
+  '  }',
+  '  vec2 d0 = (uv - uSun) * vec2(asp, 1.0);',
+  '  o = vec4(acc / max(fr, 1e-4), exp(-length(d0) * 2.2) * smoothstep(0.02, 0.14, length(d0)), 0.0, 1.0); }'].join('\n');
+
+var LAN_VS = [G.head,
+  'layout(location=0) in vec4 aP; uniform mat4 uVP; uniform vec4 uMir; uniform float uTime, uSize, uInt, uFloor; out vec4 vC;',
+  'void main(){ float s = aP.w, T = 38.0 + 30.0 * fract(s * 7.13), ph = fract(uTime / T + s);',
+  '  vec3 p = vec3(aP.x + 7.0 * ph + 4.0 * sin(uTime * 0.11 + s * 30.0) * ph, uFloor + 1.6 + ph * 15.0 + 0.4 * sin(uTime * 0.9 + s * 20.0), aP.z + 5.0 * sin(uTime * 0.07 + s * 17.0) * ph);',
+  '  float fade = smoothstep(0.0, 0.06, ph) * (1.0 - smoothstep(0.78, 1.0, ph)), fl = 0.82 + 0.18 * sin(uTime * 7.0 + s * 90.0) * sin(uTime * 3.1 + s * 40.0);',
+  '  if (uMir.x > 0.5) p.y = 2.0 * uMir.y - p.y;',
+  '  vec4 c = uVP * vec4(p, 1.0); gl_Position = c; gl_PointSize = clamp(uSize / max(c.w, 0.5), 2.0, 42.0); vC = vec4(fade * fl * uInt, ph, s, 0.0);',
+  '}'].join('\n');
+var LAN_FS = [G.head, 'in vec4 vC; out vec4 o;',
+  'void main(){ vec2 q = (gl_PointCoord - 0.5) * 2.0; q.y = -q.y; float r2 = dot(q, q);',
+  '  vec2 b = vec2(q.x / (0.36 - 0.05 * q.y * q.y * 4.0), (q.y + 0.02) / 0.50); float lb = length(b), body = smoothstep(1.0, 0.86, lb), rib = 0.85 + 0.15 * cos(b.x * 9.0);',
+  '  vec3 col = vec3(1.0, 0.56, 0.16) * (exp(-r2 * 7.0) * 0.30 + body * rib * (0.45 + 0.55 * smoothstep(0.6, -0.8, q.y)) * 3.0) + vec3(1.0, 0.85, 0.5) * exp(-dot(vec2(q.x, q.y + 0.18), vec2(q.x, q.y + 0.18)) * 40.0) * 1.8;',
+  '  o = vec4(col * vC.x, 0.0); }'].join('\n');
+
 var BRIGHT_FS = [G.head, 'in vec2 vUv; out vec4 o; uniform sampler2D uTex; uniform float uThr;',
   'void main(){ vec3 c = texture(uTex, vUv).rgb; float l = max(c.r, max(c.g, c.b)); o = vec4(c * smoothstep(uThr, uThr + 0.7, l), 1.0); }'].join('\n');
 var BLUR_FS = [G.head, 'in vec2 vUv; out vec4 o; uniform sampler2D uTex; uniform vec2 uDir;',
@@ -432,7 +470,7 @@ var DOF_FS = [G.head, 'precision highp sampler2D;', 'in vec2 vUv; out vec4 o;', 
   '  }',
   '  o = vec4(acc / ws, 1.0); }'].join('\n');
 
-var COMP_FS = [G.head, 'precision highp sampler2D;', 'in vec2 vUv; out vec4 o;', 'uniform sampler2D uScene, uB0, uB1, uDof, uDepth; uniform vec2 uRes, uLight; uniform vec3 uRayC; uniform float uTime, uBloom, uRays, uExpo, uVig, uSteps, uSharp, uDofOn;',
+var COMP_FS = [G.head, 'precision highp sampler2D;', 'in vec2 vUv; out vec4 o;', 'uniform sampler2D uScene, uB0, uB1, uDof, uDepth, uRay, uCloud; uniform vec2 uRes, uLight, uSun; uniform vec3 uRayC, uRayS; uniform float uTime, uBloom, uRays, uExpo, uVig, uSteps, uSharp, uDofOn, uRayV, uFlare;',
   G.noise, G.aces, COCF,
   'void main(){',
   '  vec2 uv = vUv; vec2 ca = (uv - 0.5) * 0.0016;',
@@ -446,6 +484,14 @@ var COMP_FS = [G.head, 'precision highp sampler2D;', 'in vec2 vUv; out vec4 o;',
   '  vec2 dl = (uLight - uv) * 0.9 / uSteps; vec2 s = uv; float rays = 0.0, dec = 1.0, dcy = pow(0.945, 28.0 / uSteps);',
   '  for (int i = 0; i < 64; i++) { if (float(i) >= uSteps) break; s += dl; rays += dot(texture(uB0, s).rgb, vec3(0.2126, 0.7152, 0.0722)) * dec; dec *= dcy; }',
   '  col += uRayC * (rays * uRays / uSteps);',
+  '  if (uRayV > 0.5) { float zz = linZ(textureLod(uDepth, uv, 0.0).r); vec2 rv = textureLod(uRay, uv, 0.0).rg; col += uRayS * pow(rv.x, 2.8) * (0.06 + rv.y) * (1.0 - exp(-zz * 0.035)); }',
+  '  if (uFlare > 0.5) {',
+  '    float sv = step(0.99999, textureLod(uDepth, uSun, 0.0).r) * (1.0 - clamp(textureLod(uCloud, uSun, 0.0).a * 1.1, 0.0, 1.0)), ar = uRes.x / uRes.y;',
+  '    vec2 fd = (uv - uSun) * vec2(ar, 1.0), gc = vec2(0.5) - uSun;',
+  '    float st = exp(-abs(fd.y) * 70.0) * exp(-abs(fd.x) * 2.4);',
+  '    float g1 = smoothstep(0.045, 0.0, length((uv - (vec2(0.5) + gc * 0.55)) * vec2(ar, 1.0))), g2 = smoothstep(0.075, 0.0, length((uv - (vec2(0.5) + gc * 1.15)) * vec2(ar, 1.0)));',
+  '    col += uRayS * sv * (st * 0.16 + g1 * 0.05 * vec3(0.7, 1.0, 0.9) + g2 * 0.035 * vec3(1.0, 0.8, 0.6)) * uFlare;',
+  '  }',
   '  vec3 stk = vec3(0.0); for (int i = -6; i <= 6; i++) stk += texture(uB1, uv + vec2(float(i) * 0.011, 0.0)).rgb * exp(-abs(float(i)) * 0.4);',
   '  col += stk * 0.045 * uBloom * vec3(1.0, 0.84, 0.58);',
   '  col *= uExpo; col = pow(aces(col), vec3(1.0 / 2.2));',
@@ -485,16 +531,16 @@ function Hero(canvas, opt) {
   function P(vs, fs, n, defs) { return N.program(gl, defs ? vs.replace('precision highp float;\n', 'precision highp float;\n' + defs) : vs, defs ? fs.replace('precision highp float;\n', 'precision highp float;\n' + defs) : fs, n); }
   var hdrDef = hdr ? '#define HDR\n' : '';
   var pBg = P(FS_TRI, BG_FS, 'bg'), pLit = P(LIT_VS(false), LIT_FS, 'lit', hdrDef), pCol = P(LIT_VS(true), LIT_FS, 'col', hdrDef),
-      pFloor = P(FLOOR_VS, FLOOR_FS, 'floor'), pPts = P(PTS_VS, PTS_FS, 'pts'), pFly = P(FLY_VS, FLY_FS, 'fly'), pBright = P(FS_TRI, BRIGHT_FS, 'bright'), pBlur = P(FS_TRI, BLUR_FS, 'blur'), pComp = P(FS_TRI, COMP_FS, 'comp'), pDof = P(FS_TRI, DOF_FS, 'dof'),
+      pFloor = P(FLOOR_VS, FLOOR_FS, 'floor'), pPts = P(PTS_VS, PTS_FS, 'pts'), pFly = P(FLY_VS, FLY_FS, 'fly'), pLan = P(LAN_VS, LAN_FS, 'lan'), pRay = P(FS_TRI, RAY_FS, 'ray'), pBright = P(FS_TRI, BRIGHT_FS, 'bright'), pBlur = P(FS_TRI, BLUR_FS, 'blur'), pComp = P(FS_TRI, COMP_FS, 'comp'), pDof = P(FS_TRI, DOF_FS, 'dof'),
       pTer = P(LIT_VS(false), TER_FS, 'ter', hdrDef), pBld = P(LIT_VS(false), BLD_FS, 'bld', hdrDef),
       pMist = P(FLOOR_VS, MIST_FS, 'mist'), pTree = P(TREE_VS, TREE_FS, 'tree', hdrDef),
       pCloud = P(FS_TRI, CLOUD_FS, 'cloud');
   var emptyVao = gl.createVertexArray();
   var LV = [
-    { oct: 3, rays: 16, nc: 18, np: 450, ms: 2, dpr: 1.5, px: 2.6e6, cl: 0, co: 3, sh: 6, sp: 0.25, nt: 450, tl: 0, rf: 0.35, rk: 4, tr: 0.35, df: 0, dm: 0, db: 0, nf: 0 },
-    { oct: 4, rays: 28, nc: 34, np: 900, ms: 4, dpr: 2, px: 3.6e6, cl: 10, co: 3, sh: 10, sp: 0.40, nt: 1500, tl: 1, rf: 0.5, rk: 8, tr: 0.5, df: 10, dm: 0.0030, db: 0.20, nf: 60 },
-    { oct: 6, rays: 44, nc: 52, np: 1800, ms: 4, dpr: 2.5, px: 4.4e6, cl: 16, co: 4, sh: 18, sp: 0.55, nt: 3200, tl: 2, rf: 0.5, rk: 12, tr: 0.5, df: 18, dm: 0.0040, db: 0.35, nf: 120 },
-    { oct: 8, rays: 64, nc: 80, np: 2800, ms: 8, dpr: 3, px: 5.2e6, cl: 30, co: 5, sh: 32, sp: 0.75, nt: 6500, tl: 3, rf: 0.7, rk: 20, tr: 0.6, df: 30, dm: 0.0054, db: 0.55, nf: 220 }];
+    { oct: 3, rays: 16, nc: 18, np: 450, ms: 2, dpr: 1.5, px: 2.6e6, cl: 0, co: 3, sh: 6, sp: 0.25, nt: 450, tl: 0, rf: 0.35, rk: 4, tr: 0.35, df: 0, dm: 0, db: 0, nf: 0, gr: 0, cc: 0, nl: 0, lf: 0 },
+    { oct: 4, rays: 28, nc: 34, np: 900, ms: 4, dpr: 2, px: 3.6e6, cl: 10, co: 3, sh: 10, sp: 0.40, nt: 1500, tl: 1, rf: 0.5, rk: 8, tr: 0.5, df: 10, dm: 0.0030, db: 0.20, nf: 60, gr: 24, cc: 1, nl: 8, lf: 1 },
+    { oct: 6, rays: 44, nc: 52, np: 1800, ms: 4, dpr: 2.5, px: 4.4e6, cl: 16, co: 4, sh: 18, sp: 0.55, nt: 3200, tl: 2, rf: 0.5, rk: 12, tr: 0.5, df: 18, dm: 0.0040, db: 0.35, nf: 120, gr: 36, cc: 2, nl: 16, lf: 1 },
+    { oct: 8, rays: 64, nc: 80, np: 2800, ms: 8, dpr: 3, px: 5.2e6, cl: 30, co: 5, sh: 32, sp: 0.75, nt: 6500, tl: 3, rf: 0.7, rk: 20, tr: 0.6, df: 30, dm: 0.0054, db: 0.55, nf: 220, gr: 52, cc: 2, nl: 28, lf: 1 }];
   H.lv = 2; H.cfg = LV[2]; H.ready = false;
   var LD = [0.45, 0.27, -0.85], lq = Math.hypot(LD[0], LD[1], LD[2]); LD = [LD[0] / lq, LD[1] / lq, LD[2] / lq];
   var hgtTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, hgtTex);
@@ -767,6 +813,9 @@ function Hero(canvas, opt) {
   var NF = 220, fly = new Float32Array(NF * 4), rf2 = rnd(808);
   for (i = 0; i < NF; i++) { fly[i * 4] = (rf2() - 0.5) * 84; fly[i * 4 + 1] = floorY + 0.25 + rf2() * 3.4; fly[i * 4 + 2] = -62 + rf2() * 70; fly[i * 4 + 3] = rf2(); }
   var vaoFly = ptsVao(fly);
+  var NL = 40, lan = new Float32Array(NL * 4), rl = rnd(612);
+  for (i = 0; i < NL; i++) { lan[i * 4] = (rl() - 0.5) * 22; lan[i * 4 + 1] = 0; lan[i * 4 + 2] = -42 + rl() * 16; lan[i * 4 + 3] = rl(); }
+  var vaoLan = ptsVao(lan);
   /* coins */
   var rc = rnd(4242), NC = 80, coins = [];
   for (i = 0; i < NC; i++) coins.push({ rad: 4.3 + rc() * 2.6, th: rc() * TAU, w: (0.05 + rc() * 0.11) * (rc() > 0.5 ? 1 : -1), y: -1.4 + rc() * 4.0, bob: 0.15 + rc() * 0.3, f: 0.4 + rc() * 0.8, ph: rc() * TAU, s: 0.34 + rc() * 0.30, tum: 0.4 + rc() * 0.9 });
@@ -830,7 +879,7 @@ function Hero(canvas, opt) {
 
   /* render targets */
   var T = {};
-  function freeTargets() { ['scene', 'b0a', 'b0b', 'b1a', 'b1b', 'cloud', 'refl', 'dof'].forEach(function (k) { N.freeTarget(gl, T[k]); T[k] = null; }); if (T.depth) gl.deleteTexture(T.depth); T.depth = null; }
+  function freeTargets() { ['scene', 'b0a', 'b0b', 'b1a', 'b1b', 'cloud', 'refl', 'dof', 'ray'].forEach(function (k) { N.freeTarget(gl, T[k]); T[k] = null; }); if (T.depth) gl.deleteTexture(T.depth); T.depth = null; }
   function buildTargets() {
     freeTargets();
     var w = H.w, h = H.h, hw = Math.max(2, w >> 1), hh = Math.max(2, h >> 1), qw = Math.max(2, w >> 2), qh = Math.max(2, h >> 2);
@@ -846,7 +895,7 @@ function Hero(canvas, opt) {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.bindFramebuffer(gl.FRAMEBUFFER, T.scene.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, dtx, 0);
-      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) { T.depth = dtx; T.dof = N.makeTarget(gl, hw, hh, { float: hdr }); }
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) { T.depth = dtx; T.dof = N.makeTarget(gl, hw, hh, { float: hdr }); T.ray = H.cfg.gr > 0 ? N.makeTarget(gl, hw, hh, { float: hdr }) : null; }
       else { gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, null, 0); gl.deleteTexture(dtx); }
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
@@ -879,7 +928,7 @@ function Hero(canvas, opt) {
     U3(p, 'uSoftA', pl.softA); U3(p, 'uSoftB', pl.softB); U3(p, 'uFogC', pl.fog); u('uFogK', 0.012);
   }
   function drawMat(p, d, mat, model, kind, mir, aux, clip) {
-    var u = U(p); UM(p, 'uModel', model); u('uMat', mat.m, mat.r, mat.e, 1.0); u('uKind', kind || 0); u('uAux', aux || 0); u('uClip', clip === undefined ? 1e4 : clip);
+    var u = U(p); UM(p, 'uModel', model); u('uMat', mat.m, mat.r, mat.e, 1.0); u('uCC', mat.m > 0.9 && !mir ? H.cfg.cc : 0); u('uKind', kind || 0); u('uAux', aux || 0); u('uClip', clip === undefined ? 1e4 : clip);
     if (mir) u('uMir', 1, floorY, 0.32, 0.55); else u('uMir', 0, floorY, 0, 1);
     N.draw(gl, d, mat.c);
   }
@@ -950,6 +999,11 @@ function Hero(canvas, opt) {
       D.treeC.count = Math.round(treeJob.nC * f); N.draw(gl, D.treeC, [1, 1, 1, 1]);
       D.treeB.count = Math.round(treeJob.nB * f); N.draw(gl, D.treeB, [1, 1, 1, 1]);
       D.treeP.count = Math.round(treeJob.nP * f); N.draw(gl, D.treeP, [1, 1, 1, 1]);
+    }
+    function drawLanterns(mir) {
+      if (cfg.nl <= 0 || dk > 0.9) return;
+      gl.useProgram(pLan.p); var q = U(pLan); UM(pLan, 'uVP', VP); q('uTime', t); q('uSize', 1.6 * (mir ? rfT.h : H.h) / 0.536); q('uInt', Math.pow(1 - dk, 1.5) * 1.8); q('uFloor', floorY); q('uMir', mir ? 1 : 0, floorY, 0, 1);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false); gl.bindVertexArray(vaoLan); gl.drawArrays(gl.POINTS, 0, cfg.nl); gl.depthMask(true); gl.disable(gl.BLEND);
     }
     function drawLand(mir) {
       if (D.terrain) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, hgtTex); landU(pTer, mir); gl.uniform1i(pTer.U.uHgt, 2); gl.activeTexture(gl.TEXTURE0); UM(pTer, 'uModel', M.id()); U(pTer)('uFade', terJob.fade); N.draw(gl, D.terrain, [1, 1, 1, 1]); }
@@ -1026,7 +1080,7 @@ function Hero(canvas, opt) {
       gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST); gl.depthMask(true); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       drawSky(rfT.w, rfT.h, 1);
       gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
-      drawWorld(true);
+      drawWorld(true); drawLanterns(true);
       gl.bindTexture(gl.TEXTURE_2D, rfT.tex); gl.generateMipmap(gl.TEXTURE_2D);
     }
 
@@ -1052,6 +1106,7 @@ function Hero(canvas, opt) {
     U3(pPts, 'uPA', pl.pa); U3(pPts, 'uPB', pl.pb); u('uBokeh', 0); gl.bindVertexArray(vaoPts); gl.drawArrays(gl.POINTS, 0, cfg.np);
     u('uBokeh', 1); u('uSize', 46 * H.dpr); u('uInt', pl.pint * 1.0); gl.bindVertexArray(vaoBok); gl.drawArrays(gl.POINTS, 0, NB);
     if (cfg.nf > 0 && dk < 0.85) { gl.useProgram(pFly.p); u = U(pFly); UM(pFly, 'uVP', VP); u('uTime', t); u('uSize', 300 * H.dpr); u('uInt', (1 - dk) * (1 - dk) * 3.0); gl.bindVertexArray(vaoFly); gl.drawArrays(gl.POINTS, 0, cfg.nf); }
+    drawLanterns(false);
     gl.depthMask(true); gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST); gl.bindVertexArray(null);
 
     /* resolve MSAA */
@@ -1071,6 +1126,9 @@ function Hero(canvas, opt) {
     var dofOn = !!(T.dof && T.depth && !H.noDepth && cfg.df > 0), zf = -(V[6] * (0.55 + bob) + V[14]), apx = cfg.dm * H.h;
     var dofU = function (q) { q('uF', zf, apx, 0.18, apx * 0.6); q('uNF', 0.5, 700, 5.2); };
     if (dofOn) pass(pDof, T.dof, T.dof.w, T.dof.h, function (q) { tex(pDof, 'uTex', sceneT, 0); tex(pDof, 'uDepth', { tex: T.depth }, 1); q('uPx', 1 / H.w, 1 / H.h); q('uK', cfg.df); q('uBoost', cfg.db); dofU(q); });
+    var rayOn = !!(T.depth && !H.noDepth && cfg.gr > 0 && T.ray && T.cloud);
+    var flareOn = !!(T.depth && !H.noDepth && cfg.lf > 0 && T.cloud);
+    if (rayOn) pass(pRay, T.ray, T.ray.w, T.ray.h, function (q) { tex(pRay, 'uDepth', { tex: T.depth }, 1); tex(pRay, 'uCloud', T.cloud, 2); q('uSun', 0.82, 0.80); q('uRes', H.w, H.h); q('uSteps', cfg.gr); });
     pass(pBright, T.b0a, T.b0a.w, T.b0a.h, function (q) { tex(pBright, 'uTex', sceneT, 0); q('uThr', pl.thr); });
     pass(pBlur, T.b0b, T.b0b.w, T.b0b.h, function (q) { tex(pBlur, 'uTex', T.b0a, 0); q('uDir', 1 / T.b0a.w, 0); });
     pass(pBlur, T.b0a, T.b0a.w, T.b0a.h, function (q) { tex(pBlur, 'uTex', T.b0b, 0); q('uDir', 0, 1 / T.b0a.h); });
@@ -1080,6 +1138,8 @@ function Hero(canvas, opt) {
     pass(pBlur, T.b1b, T.b1b.w, T.b1b.h, function (q) { tex(pBlur, 'uTex', T.b1a, 0); q('uDir', 0, 1 / T.b1b.h); });
     pass(pComp, null, H.w, H.h, function (q) {
       tex(pComp, 'uScene', sceneT, 0); tex(pComp, 'uB0', T.b0a, 1); tex(pComp, 'uB1', T.b1b, 2); q('uDofOn', dofOn ? 1 : 0); if (dofOn) { tex(pComp, 'uDof', T.dof, 3); tex(pComp, 'uDepth', { tex: T.depth }, 4); dofU(q); }
+      q('uRayV', rayOn ? 1 : 0); q('uFlare', flareOn ? 1 : 0);
+      if (rayOn || flareOn) { tex(pComp, 'uDepth', { tex: T.depth }, 4); tex(pComp, 'uCloud', T.cloud, 5); if (rayOn) tex(pComp, 'uRay', T.ray, 6); q('uSun', 0.82, 0.80); dofU(q); var rk = mix(1.25, 1.0, dk); q('uRayS', mix(0.60, 1.0, dk) * rk, mix(0.78, 0.90, dk) * rk, mix(1.0, 0.68, dk) * rk); }
       q('uRes', H.w, H.h); q('uLight', starPos[0], 1 - starPos[1]); q('uTime', t); q('uBloom', pl.bloom * (1 + iv * 1.2)); q('uRays', pl.rays); q('uRayC', pl.glow[0], pl.glow[1], pl.glow[2]); q('uExpo', pl.expo * (0.45 + 0.55 * H.intro)); q('uVig', pl.vig); q('uSteps', cfg.rays); q('uSharp', cfg.sp);
     });
     gl.bindVertexArray(null);
